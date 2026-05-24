@@ -119,9 +119,8 @@ export function CalculatorPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-sm flex-col gap-6">
-      <header className="space-y-1 text-left">
+      <header className="text-left">
         <h1 className="text-[1.5rem] font-semibold text-st-body">Calculadora</h1>
-        <p className="text-sm text-st-muted-text">Remote MF · calculatorRemote/Shell</p>
       </header>
 
       <div
