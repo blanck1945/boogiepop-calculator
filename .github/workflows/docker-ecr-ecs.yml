@@ -1,0 +1,72 @@
+name: Docker build → ECR (ECS opcional)
+
+# Activa también `push.branches` cuando tengáis configurado OIDC (secret AWS_ROLE_ARN) y vars de ECR.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'us-east-1' }}
+  IMAGE_NAME: ${{ vars.ECR_REPOSITORY != '' && vars.ECR_REPOSITORY || 'boogiepop-react-seed' }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Calcular etiquetas de imagen
+        id: meta
+        run: |
+          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          REPO="${{ env.IMAGE_NAME }}"
+          echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
+          echo "repository=${REPO}" >> "$GITHUB_OUTPUT"
+          echo "image_uri=${REGISTRY}/${REPO}" >> "$GITHUB_OUTPUT"
+
+      - name: Variables de build (Vite Module Federation)
+        id: vite
+        run: |
+          BASE="${REMOTE_BASE:-/}"
+          echo "VITE_REMOTE_BASE=${BASE}"
+          echo "remote_base=${BASE}" >> "$GITHUB_OUTPUT"
+        env:
+          REMOTE_BASE: ${{ vars.VITE_REMOTE_BASE }}
+
+      - name: Build y push Docker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            VITE_REMOTE_BASE=${{ steps.vite.outputs.remote_base }}
+            VITE_DEV_SERVER_ORIGIN=http://localhost:5173
+          tags: |
+            ${{ steps.meta.outputs.image_uri }}:${{ github.sha }}
+            ${{ steps.meta.outputs.image_uri }}:latest
+
+      - name: Forzar nuevo despliegue en ECS (opcional)
+        if: ${{ vars.ECS_CLUSTER != '' && vars.ECS_SERVICE != '' }}
+        run: |
+          aws ecs update-service \
+            --cluster "${ECS_CLUSTER}" \
+            --service "${ECS_SERVICE}" \
+            --region "${AWS_REGION}" \
+            --force-new-deployment
+        env:
+          ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+          ECS_SERVICE: ${{ vars.ECS_SERVICE }}
