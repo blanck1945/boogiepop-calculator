@@ -1,12 +1,13 @@
 # GitLab CI — boogiepop-calculator (remote MF Calculadora)
-# Basado en boogiepop-react-seed — ver docs/GITLAB-DEPLOY.md
 #
-# develop (push): lint + vite-build; Docker/ECS MANUAL (staging, como el host).
-# main (push tras merge MR): lint + vite-build + Docker/ECS AUTOMÁTICO → prod (:latest + ECS).
+# La calculadora se publica como estático en el bucket hub-manifest (manifest S3),
+# NO en ECS — el react-seed ocupa boogiepop-api-fe-remote-svc en /mf.
 #
-# Variables (Settings → CI/CD → Variables), mismas credenciales que el host:
-# - ECR_REGISTRY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
-# - VITE_REMOTE_BASE (URL pública del MF en prod, ej. https://mf.tudominio.com/)
+# develop (push): lint + vite-build (sin deploy).
+# main (push): lint + vite-build (base S3) + s3 sync → remotes/calculator/
+#
+# Variables (Settings → CI/CD → Variables):
+# - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (Protected en main; permiso s3:PutObject en hub-manifest)
 
 stages:
   - verify
@@ -25,9 +26,10 @@ cache:
 
 variables:
   AWS_DEFAULT_REGION: us-east-1
-  REMOTE_ECR_REPOSITORY: boogiepop-remote
-  ECS_CLUSTER_NAME: boogiepop-api-cluster
-  ECS_FRONT_REMOTE_SERVICE_NAME: boogiepop-api-fe-remote-svc
+  HUB_MANIFEST_BUCKET: "boogiepop-hub-manifest-653876198281"
+  CALCULATOR_S3_PREFIX: "remotes/calculator"
+  # Base pública del build prod (debe coincidir con remoteEntry del manifest S3).
+  VITE_REMOTE_BASE_PROD: "https://boogiepop-hub-manifest-653876198281.s3.us-east-1.amazonaws.com/remotes/calculator/"
 
 lint:
   stage: verify
@@ -54,96 +56,52 @@ vite-build:
     - when: never
   script:
     - npm ci
+    - |
+      if [ "${CI_COMMIT_BRANCH}" = "main" ]; then
+        export VITE_REMOTE_BASE="${VITE_REMOTE_BASE_PROD}"
+        echo "Build prod calculadora: VITE_REMOTE_BASE=${VITE_REMOTE_BASE}"
+      else
+        export VITE_REMOTE_BASE="${VITE_REMOTE_BASE:-/}"
+        echo "Build dev/MR calculadora: VITE_REMOTE_BASE=${VITE_REMOTE_BASE}"
+      fi
     - npm run build
   artifacts:
     paths:
       - dist/
     expire_in: 1 week
 
-.docker_publish_remote:
+.deploy_calculator_s3:
   stage: deploy
-  image: ubuntu:22.04
-  services:
-    - name: docker:24-dind
-      command: ["--tls=false"]
+  image:
+    name: amazon/aws-cli:2.27.25
+    entrypoint: [""]
   needs: ["vite-build"]
-  variables:
-    IMAGE_TAG: $CI_COMMIT_SHORT_SHA
-    DOCKER_TLS_CERTDIR: ""
-    DOCKER_HOST: tcp://docker:2375
-    FF_NETWORK_PER_BUILD: "1"
   before_script:
-    - apt-get update -qq
-    - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates unzip gnupg
-    - install -dm755 /etc/apt/keyrings
-    - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    - chmod a+r /etc/apt/keyrings/docker.gpg
-    - echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu jammy stable" > /etc/apt/sources.list.d/docker.list
-    - apt-get update -qq
-    - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-ce-cli docker-buildx-plugin
-    - curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
-    - unzip -q /tmp/awscliv2.zip -d /tmp
-    - /tmp/aws/install -i /usr/local/aws-cli -b /usr/local/bin
-    - aws sts get-caller-identity
-    - sleep 3
-    - docker info
-    - docker buildx create --name ci-remote-build --use 2>/dev/null || docker buildx use ci-remote-build
-    - docker run --privileged --rm tonistiigi/binfmt:latest --install all
-    - bash -cx 'REG_HOST=$(echo "${ECR_REGISTRY}" | cut -d/ -f1); aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${REG_HOST}"'
+    - |
+      set -eu
+      if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+        echo "ERROR: faltan AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY en CI/CD Variables (Protected en main)."
+        exit 1
+      fi
+      if [ -z "${HUB_MANIFEST_BUCKET:-}" ]; then
+        echo "ERROR: HUB_MANIFEST_BUCKET vacío."
+        exit 1
+      fi
   script:
+    - aws sts get-caller-identity
     - |
       set -eux
-      BASE_URI="${ECR_REGISTRY}/${REMOTE_ECR_REPOSITORY}"
-      IMAGE_URI="${BASE_URI}:${IMAGE_TAG}"
-      BUILD_ARGS="--build-arg VITE_REMOTE_BASE=${VITE_REMOTE_BASE:-/} --build-arg VITE_DEV_SERVER_ORIGIN=${VITE_DEV_SERVER_ORIGIN:-http://localhost:5173}"
-      COMMON="docker buildx build --platform linux/arm64 --provenance=false --sbom=false --push ${BUILD_ARGS}"
-      if [ "${CI_COMMIT_BRANCH}" = "main" ]; then
-        ${COMMON} -t "${IMAGE_URI}" -t "${BASE_URI}:latest" .
-      elif [ -n "${CI_COMMIT_TAG:-}" ]; then
-        ${COMMON} -t "${IMAGE_URI}" -t "${BASE_URI}:latest" .
-      else
-        ${COMMON} -t "${IMAGE_URI}" -t "${BASE_URI}:develop" .
-      fi
+      DEST="s3://${HUB_MANIFEST_BUCKET}/${CALCULATOR_S3_PREFIX}/"
+      echo "Sync calculadora → ${DEST}"
+      aws s3 sync dist/ "${DEST}" --delete --region "${AWS_DEFAULT_REGION}"
+      aws s3 cp dist/remoteEntry.js "${DEST}remoteEntry.js" \
+        --cache-control "max-age=60, must-revalidate" \
+        --content-type "application/javascript" \
+        --region "${AWS_DEFAULT_REGION}"
 
-# Staging: manual en develop (igual host).
-docker-publish-remote:
-  extends: .docker_publish_remote
+deploy-calculator-s3-prod:
+  extends: .deploy_calculator_s3
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE == "push" && $ECR_REGISTRY'
-      when: manual
-    - when: never
-
-# Prod: automático al mergear MR → main (push a main).
-docker-publish-remote-prod:
-  extends: .docker_publish_remote
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push" && $ECR_REGISTRY'
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"'
       when: on_success
     - when: never
-
-deploy-remote-ecs:
-  stage: deploy
-  image:
-    name: amazon/aws-cli:2.27.25
-    entrypoint: [""]
-  script:
-    - aws sts get-caller-identity
-    - aws ecs update-service --cluster "$ECS_CLUSTER_NAME" --service "$ECS_FRONT_REMOTE_SERVICE_NAME" --force-new-deployment --region "$AWS_DEFAULT_REGION"
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE == "push"'
-      when: manual
-    - when: never
-
-deploy-remote-ecs-prod:
-  stage: deploy
-  image:
-    name: amazon/aws-cli:2.27.25
-    entrypoint: [""]
-  needs: ["docker-publish-remote-prod"]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push" && $ECR_REGISTRY'
-      when: on_success
-    - when: never
-  script:
-    - aws sts get-caller-identity
-    - aws ecs update-service --cluster "$ECS_CLUSTER_NAME" --service "$ECS_FRONT_REMOTE_SERVICE_NAME" --force-new-deployment --region "$AWS_DEFAULT_REGION"
