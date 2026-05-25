@@ -4,7 +4,7 @@
 # develop: lint + vite-build; Docker/ECS MANUAL
 # main: lint + vite-build + Docker/ECS AUTOMÁTICO → prod (:latest + ECS)
 #
-# Variables GitLab: ECR_REGISTRY, AWS_* , VITE_REMOTE_BASE (build Docker)
+# Variables GitLab: ECR_REGISTRY, AWS_ROLE_ARN (OIDC), VITE_REMOTE_BASE (build Docker)
 
 stages:
   - verify
@@ -23,6 +23,7 @@ cache:
 
 variables:
   AWS_DEFAULT_REGION: us-east-1
+  AWS_ROLE_ARN: ""
   ECR_REPOSITORY: boogiepop-calculator
   ECS_CLUSTER_NAME: boogiepop-api-cluster
   ECS_CALC_SERVICE_NAME: boogiepop-api-fe-calc-svc
@@ -64,6 +65,9 @@ vite-build:
 .docker_publish_calc:
   stage: deploy
   image: ubuntu:22.04
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
   services:
     - name: docker:24-dind
       command: ["--tls=false"]
@@ -76,8 +80,8 @@ vite-build:
   before_script:
     - |
       set -eu
-      if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-        echo "ERROR: faltan AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY en CI/CD Variables."
+      if [ -z "${AWS_ROLE_ARN:-}" ]; then
+        echo "ERROR: falta AWS_ROLE_ARN para autenticación federada OIDC."
         exit 1
       fi
       if [ -z "${VITE_REMOTE_BASE:-}" ]; then
@@ -95,6 +99,9 @@ vite-build:
     - curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
     - unzip -q /tmp/awscliv2.zip -d /tmp
     - /tmp/aws/install -i /usr/local/aws-cli -b /usr/local/bin
+    - export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/gitlab-oidc-token"
+    - printf '%s' "${GITLAB_OIDC_TOKEN}" > "${AWS_WEB_IDENTITY_TOKEN_FILE}"
+    - export AWS_ROLE_ARN AWS_DEFAULT_REGION
     - aws sts get-caller-identity
     - sleep 3
     - docker info
@@ -135,11 +142,23 @@ deploy-calc-ecs-prod:
   image:
     name: amazon/aws-cli:2.27.25
     entrypoint: [""]
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
   needs: ["docker-publish-calc-prod"]
   rules:
     - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"'
       when: on_success
     - when: never
   script:
+    - |
+      set -eu
+      if [ -z "${AWS_ROLE_ARN:-}" ]; then
+        echo "ERROR: falta AWS_ROLE_ARN para autenticación federada OIDC."
+        exit 1
+      fi
+    - export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/gitlab-oidc-token"
+    - printf '%s' "${GITLAB_OIDC_TOKEN}" > "${AWS_WEB_IDENTITY_TOKEN_FILE}"
+    - export AWS_ROLE_ARN AWS_DEFAULT_REGION
     - aws sts get-caller-identity
     - aws ecs update-service --cluster "$ECS_CLUSTER_NAME" --service "$ECS_CALC_SERVICE_NAME" --force-new-deployment --region "$AWS_DEFAULT_REGION"
