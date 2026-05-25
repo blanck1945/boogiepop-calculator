@@ -126,14 +126,14 @@ vite-build:
 docker-publish-calc:
   extends: .docker_publish_calc
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE == "push" && $AWS_ROLE_ARN'
       when: manual
     - when: never
 
 docker-publish-calc-prod:
   extends: .docker_publish_calc
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push" && $AWS_ROLE_ARN'
       when: on_success
     - when: never
 
@@ -147,7 +147,7 @@ deploy-calc-ecs-prod:
       aud: https://gitlab.com
   needs: ["docker-publish-calc-prod"]
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push" && $AWS_ROLE_ARN'
       when: on_success
     - when: never
   script:
