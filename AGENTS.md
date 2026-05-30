@@ -82,3 +82,5 @@ Además: el CSS global debe importarse en **`RemoteShell.tsx`** (`index.css`): e
 - [ ] ¿Layout hub fullscreen → revisé **`docs/LLM-hub-embed-layout.md`** en el host?
 
 Si algo no está claro, **AGENTS.md + [spec-kit/map.md](spec-kit/map.md)** son la primera fuente antes de infra.
+
+<!-- test guard -->
