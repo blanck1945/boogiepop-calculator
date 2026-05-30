@@ -6,4 +6,5 @@ on:
 jobs:
   protected-files:
     uses: blanck1945/boogiepop-platform-guards/.github/workflows/protected-files.yml@main
-    secrets: inherit
+    secrets:
+      PLATFORM_OWNER_USERNAME: ${{ secrets.PLATFORM_OWNER_USERNAME }}
