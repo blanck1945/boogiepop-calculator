@@ -33,3 +33,4 @@ Variables y checklist: [`docs/GITLAB-DEPLOY.md`](docs/GITLAB-DEPLOY.md).
 
 - Node.js ≥ 22
 - Docker + AWS (solo para deploy manual o CI)
+<!-- updated -->
