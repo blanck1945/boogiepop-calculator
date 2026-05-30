@@ -1,0 +1,9 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  protected-files:
+    uses: blanck1945/boogiepop-platform-guards/.github/workflows/protected-files.yml@main
+    secrets: inherit
