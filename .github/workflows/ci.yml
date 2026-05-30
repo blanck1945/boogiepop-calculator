@@ -5,6 +5,4 @@ on:
 
 jobs:
   protected-files:
-    uses: blanck1945/boogiepop-platform-guards/.github/workflows/protected-files.yml@main
-    secrets:
-      PLATFORM_OWNER_USERNAME: ${{ secrets.PLATFORM_OWNER_USERNAME }}
+    uses: blanck1945/boogiepop-platform-guards/.github/workflows/test-minimal.yml@main
